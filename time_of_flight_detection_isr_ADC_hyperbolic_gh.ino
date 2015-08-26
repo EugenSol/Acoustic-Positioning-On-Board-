@@ -112,10 +112,10 @@ void loop() {
           signal_0[i] = signal_raw[i + it * 256];       //Copy FFT_SIZE elements of latest signal_raw to signal_0
         }
 
-        // Perform xcorr 
-        
+        // Perform xcorr    
         fast_xcorr( signal_0, signal_1, xCorrResult, FFT_SIZE );  // The output data is in every second element of xCorrResult
 
+        // Find peak and associated offset
         peak_detection( &peak_offset, &peak_value, xCorrResult, FFT_SIZE);    // updates peak_offset and peak_value for provided xCorrResult array
         peak_offset -= it * 256;                                              // adjusts the peak_offset
 
@@ -183,11 +183,11 @@ void fast_xcorr( int16_t signal_A[], int16_t signal_B[], int32_t xCorrResult[], 
           sigB_i = (reverse[0] - forward[0]) >> 1;
           
           // calculate conj(fft(signal_A)) * fft(signal_B)
-          int32_t cfs1_sigB_r = (sigA_r * sigB_r + sigA_i * sigB_i);
-          int32_t cfs1_sigB_i = (sigA_r * sigB_i - sigA_i * sigB_r);
-          iFFT_buffer[i] = iFFT_buffer[2 * FFT_SIZE - i] = cfs1_sigB_r;
-          iFFT_buffer[i + 1] = cfs1_sigB_i;
-          iFFT_buffer[2 * FFT_SIZE - i + 1] = -cfs1_sigB_i;
+          int32_t cs_sigB_r = (sigA_r * sigB_r + sigA_i * sigB_i);
+          int32_t cs_sigB_i = (sigA_r * sigB_i - sigA_i * sigB_r);
+          iFFT_buffer[i] = iFFT_buffer[2 * FFT_SIZE - i] = cs_sigB_r;
+          iFFT_buffer[i + 1] = cs_sigB_i;
+          iFFT_buffer[2 * FFT_SIZE - i + 1] = -cs_sigB_i;
         }
         
         //  Nyquist point
@@ -209,7 +209,7 @@ void peak_detection( int16_t *peak_offset, int32_t *peak_value, int32_t xCorrRes
         int32_t peak_value_local = xCorrResult[0];
 
         for ( int16_t i = 1, j = 2; i < FFT_SIZE; i++, j += 2 ) {
-          if (xCorrResult[j] > *peak_value) {
+          if (xCorrResult[j] > peak_value_local) {
             peak_value_local = xCorrResult[j];
             peak_offset_local = i;
           }
