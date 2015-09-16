@@ -26,8 +26,8 @@
 // INITIALIZATIONS
 // Timing 
 const uint32_t T_cycle = 75000;      // [us]. Period for highly precise loop. Has to coincide with the duration of the acoustic signal. Consists of recording time T_recording and the processing time.
-const uint32_t T_recording = 50000;  // [us]. Recording time. Starts immidiately after loop is entered.
-volatile boolean isrFlag = 0;        // flag for ISR to enter main loop every T_recording.
+const uint32_t T_recording = 50000;  // [us]. Recording time. Starts immidiately after loop is entered. TODO: Check that 2048 are written faster than T_recording
+volatile boolean isrFlag = 0;        // flag for ISR to enter main loop every T_cycle.
 IntervalTimer isrTimer;              // interrupt to call recording loop at a precise timing interval
 
 // ADC Conversion
@@ -41,6 +41,8 @@ RingBufferDMA *dmaBuffer = new RingBufferDMA(buffer, buffer_size, ADC_0);  // us
 
 //Initialize FFT objects and FFT arrays
 const int16_t FFT_SIZE = 1024;
+int16_t XCorrShift = 256;
+uint16_t numShifts = 1;
 int32_t xCorrResult[2 * FFT_SIZE];
 arm_cfft_radix4_instance_q15 fft_inst; // create arm fft object, q15 data corresponds to int16_t
 arm_cfft_radix4_instance_q31 ifft_inst;  // create arm ifft object, q15 data corresponds to int32_t
@@ -56,6 +58,12 @@ void adc0_isr( void );
 void fast_xcorr( int16_t signal_A[], int16_t signal_B[], int32_t xCorrResult[], uint16_t FFT_SIZE );
 void peak_detection( int16_t *peak_offset, int32_t *peak_value, int32_t xCorrResult[], uint16_t FFT_SIZE );
 
+int16_t peak_offset0 = {0};
+int16_t peak_offset1 = {0};
+int16_t peak_offset2 = {0};
+int16_t peak_offset3 = {0};
+int16_t  peak_offset0prvCycl = {0};
+
 
 // Setup
 void setup() {
@@ -67,7 +75,7 @@ void setup() {
   isrTimer.begin( setIsrTimingFlag, T_cycle );
 
 // ADC Conversion, scroll down for details
-  adc -> setAveraging( 8 ); // set number of averages
+  adc -> setAveraging( 8 ); // set number of averages, if set to 4 sample frequency is 117kHz
   adc -> setResolution( 16 ); // set bits of resolution
   adc -> setConversionSpeed( ADC_VERY_HIGH_SPEED ); // change the conversion speed
   adc -> setSamplingSpeed( ADC_VERY_HIGH_SPEED ); // change the sampling speed
@@ -86,52 +94,75 @@ void setup() {
 void loop() {
   
   uint16_t count = 0;     // count elements written to raw data array
-    
+    elapsedMicros us;
   if ( isrFlag ) {      // enters loop every T_cycle us
 
     while ( count < SIGNAL_RAW_SIZE ) {
       adc -> analogRead( readPin, ADC_0 );    // ADC conversion, result is saved to dmaBuffer
       count ++;
     }
-       
+     
     isrFlag = false;    // sets timing isr flag to false, so that a new loop can be entered
 
     for ( int i = 0; i < SIGNAL_RAW_SIZE; i++ ) {  //loop through dmaBuffer and copy content to signal_raw array
-        signal_raw[i] = (dmaBuffer -> p_elems[i]) - 12000;  //TODO: Remove DC gain automatically
+        signal_raw[i] = (dmaBuffer -> p_elems[i]) + 32768;  //TODO: Remove DC gain automatically
       }
 
-    // Process recorded data
-    elapsedMicros sinceProcStart;
+    // ****Process recorded data****
+    //elapsedMicros sinceProcStart;
     
-    int16_t peak_offset = 0;     // initialize peak offset and peak value of xcorr result
-    int32_t peak_value = 0;
+    int16_t peak_offset = {0};     // initialize peak offset and peak value of xcorr result
+    int32_t peak_value = {0};
 
-    for ( unsigned it = 0; it < 1; it++ ) {
+    for ( uint16_t shiftIdx = 0; shiftIdx < numShifts; shiftIdx++ ) {
 
         for ( unsigned i = 0; i < FFT_SIZE; i++ ) {
-          signal_0[i] = signal_raw[i + it * 256];       //Copy FFT_SIZE elements of latest signal_raw to signal_0
+          signal_0[i] = signal_raw[i + shiftIdx * XCorrShift];       //Copy FFT_SIZE elements of latest signal_raw to signal_0
         }
 
         // Perform xcorr    
         fast_xcorr( signal_0, signal_1, xCorrResult, FFT_SIZE );  // The output data is in every second element of xCorrResult
 
         // Find peak and associated offset
-        peak_detection( &peak_offset, &peak_value, xCorrResult, FFT_SIZE);    // updates peak_offset and peak_value for provided xCorrResult array
-        peak_offset -= it * 256;                                              // adjusts the peak_offset
+        peak_detection( &peak_offset, &peak_value, xCorrResult, FFT_SIZE, shiftIdx, XCorrShift );    // updates peak_offset and peak_value for provided xCorrResult array
+
+
+        for ( unsigned i = 0; i < FFT_SIZE; i++ ) {
+          signal_0[i] = signal_raw[i];       //Copy FFT_SIZE elements of latest signal_raw to signal_0
+        }
 
     }
 
-      Serial.println( -peak_offset ); 
-      Serial.print(" ");
+      peak_offset0prvCycl = peak_offset3;
+      peak_offset3 = peak_offset2;
+      peak_offset2 = peak_offset1;
+      peak_offset1 = peak_offset0;
+      peak_offset0 = peak_offset;
 
+      if ( peak_offset0 > peak_offset0prvCycl+8 || peak_offset0 < peak_offset0prvCycl-8 ) {
+        Serial.print("00000000000000");
+        Serial.println( -peak_offset ); 
+        Serial.print(" ");
+          }
+      else {
+        Serial.println( -peak_offset ); 
+        Serial.print(" ");
+      }
       memcpy( signal_3 , signal_2, 2*FFT_SIZE );
       memcpy( signal_2 , signal_1, 2*FFT_SIZE );
       memcpy( signal_1 , signal_0, 2*FFT_SIZE );
-      
-      int32_t DataProcessing = sinceProcStart;
-      dprint( DataProcessing );
 
+//              Serial.print('\n');
+//              Serial.print('\n');
+//              Serial.print(F("S2 contents: "));
+//              for (int k1=0; k1<1024; k1++) {
+//              Serial.print(xCorrResult[k1]);
+//              Serial.print(" ");
+//           }
+//int32_t duration = us;
+//Serial.println( duration );
    }   // timing loop
+   
 }      // main
 
 /* Set isr flag to true when called.
@@ -204,23 +235,17 @@ void fast_xcorr( int16_t signal_A[], int16_t signal_B[], int32_t xCorrResult[], 
 
 /* Detect peak offset where xCorrResult is max
  */
-void peak_detection( int16_t *peak_offset, int32_t *peak_value, int32_t xCorrResult[], uint16_t FFT_SIZE ) {
-        int16_t peak_offset_local = 0;
-        int32_t peak_value_local = xCorrResult[0];
+void peak_detection( int16_t *peak_offset, int32_t *peak_value, int32_t xCorrResult[], uint16_t FFT_SIZE, uint16_t shiftIdx, int16_t XCorrShift ) {
 
-        for ( int16_t i = 1, j = 2; i < FFT_SIZE; i++, j += 2 ) {
-          if (xCorrResult[j] > peak_value_local) {
-            peak_value_local = xCorrResult[j];
-            peak_offset_local = i;
-          }
-          if ( peak_offset_local > FFT_SIZE / 2 )
-            peak_offset_local -= FFT_SIZE;
-        }
+            for ( int16_t i = 0, j = 0; i < FFT_SIZE ; i++, j += 2 ) {
+          if (xCorrResult[j] > ( *peak_value)) {
+            *peak_value = xCorrResult[j];
+            *peak_offset = i - shiftIdx * XCorrShift;
+             }
+        } 
 
-        if ( peak_value_local > *peak_value ) {
-            *peak_value = peak_value_local;
-            *peak_offset = peak_offset_local;
-        }
+         if ( *peak_offset > FFT_SIZE / 2 )
+             *peak_offset -= FFT_SIZE;             
 }
 
 /* ADC ReadMe
